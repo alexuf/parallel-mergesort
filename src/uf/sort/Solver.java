@@ -5,11 +5,11 @@ import uf.sort.io.IntermediateResultHolder;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.NoSuchElementException;
+import java.util.*;
 import java.util.concurrent.*;
+
+import static uf.sort.io.IntermediateResultHolder.IntermediateResult;
+import static uf.sort.io.IntermediateResultHolder.Tuple;
 
 public class Solver {
 
@@ -51,26 +51,26 @@ public class Solver {
         System.err.println("Chunks number: " + chunksNumber);
 
         IntermediateResultHolder outputHolder = new IntermediateResultHolder.InFile(out, mergeBuffer);
-        IntermediateResultHolder.IntermediateResult output = null;
+        IntermediateResult output = null;
 
         System.err.println("Sorting...");
         long sortStart = System.currentTimeMillis();
         try {
 
-            Iterator<IntermediateResultHolder.IntermediateResult> chunks = input.split(chunkSize);
+            Iterator<IntermediateResult> chunks = input.split(chunkSize);
             int minSortSplitSize = chunkSize / threadsNumber;
 
             if (chunksNumber == 1) {
-                IntermediateResultHolder.IntermediateResult chunk = chunks.next();
+                IntermediateResult chunk = chunks.next();
                 FutureResult futureResult = sortChunk(chunk, minSortSplitSize, outputHolder);
                 output = futureResult.get();
                 chunk.close();
             } else if (chunksNumber > 0) {
                 MergingFutureResult finalMergingFutureResult = new MergingFutureResult(chunksNumber, sortResultHolder, outputHolder);
                 while (chunks.hasNext()) {
-                    IntermediateResultHolder.IntermediateResult chunk = chunks.next();
+                    IntermediateResult chunk = chunks.next();
                     FutureResult futureResult = sortChunk(chunk, minSortSplitSize, sortResultHolder);
-                    IntermediateResultHolder.IntermediateResult result = futureResult.get();
+                    IntermediateResult result = futureResult.get();
                     finalMergingFutureResult.addPart(result);
                     chunk.close();
                 }
@@ -90,7 +90,7 @@ public class Solver {
         executor.shutdown();
     }
 
-    private FutureResult sortChunk(IntermediateResultHolder.IntermediateResult chunk, int minSortSplitSize, IntermediateResultHolder resultHolder) throws IOException {
+    private FutureResult sortChunk(IntermediateResult chunk, int minSortSplitSize, IntermediateResultHolder resultHolder) throws IOException {
         int parts = 1;
         int partSize = (int)chunk.size();
         while (partSize > minSortSplitSize) {
@@ -109,11 +109,11 @@ public class Solver {
 
     private class Sort implements Runnable {
 
-        private final IntermediateResultHolder.IntermediateResult source;
+        private final IntermediateResult source;
         private final int minSplitSize;
         private final FutureResult futureResult;
 
-        public Sort(IntermediateResultHolder.IntermediateResult source, int minSplitSize, FutureResult futureResult) {
+        public Sort(IntermediateResult source, int minSplitSize, FutureResult futureResult) {
             this.source = source;
             this.minSplitSize = minSplitSize;
             this.futureResult = futureResult;
@@ -126,7 +126,7 @@ public class Solver {
                     int[] data = source.data();
                     Arrays.sort(data);
                     IntermediateResultHolder resultHolder = new IntermediateResultHolder.InMemory();
-                    IntermediateResultHolder.IntermediateResult result = resultHolder.hold(data);
+                    IntermediateResult result = resultHolder.hold(data);
                     futureResult.addPart(result);
                 } else {
                     IntermediateResultHolder.Tuple tuple = source.split();
@@ -148,15 +148,17 @@ public class Solver {
 
     private static class Merge implements Runnable {
 
-        private final IntermediateResultHolder.IntermediateResult r1;
-        private final IntermediateResultHolder.IntermediateResult r2;
+        private final int mergeLevel;
+
+        private final Tuple source;
 
         private final IntermediateResultHolder resultHolder;
         private final MergingFutureResult mergingFutureResult;
 
-        public Merge(IntermediateResultHolder.IntermediateResult r1, IntermediateResultHolder.IntermediateResult r2, IntermediateResultHolder resultHolder, MergingFutureResult mergingFutureResult) {
-            this.r1 = r1;
-            this.r2 = r2;
+        public Merge(int mergeLevel, Tuple source,
+                     IntermediateResultHolder resultHolder, MergingFutureResult mergingFutureResult) {
+            this.mergeLevel = mergeLevel;
+            this.source = source;
             this.resultHolder = resultHolder;
             this.mergingFutureResult = mergingFutureResult;
         }
@@ -164,14 +166,15 @@ public class Solver {
         @Override
         public void run() {
             try {
-                IntermediateResultHolder.IntermediateResult result;
+                IntermediateResult result;
                 try {
-                    result = resultHolder.hold(new MergingIterator(r1.iterate(), r2.iterate()), r1.size() + r2.size());
+                    MergingIterator merged = new MergingIterator(source._1.iterate(), source._2.iterate());
+                    result = resultHolder.hold(merged, source._1.size() + source._2.size());
                 } finally {
-                    r1.close();
-                    r2.close();
+                    source._1.close();
+                    source._2.close();
                 }
-                mergingFutureResult.addMergeResult(result);
+                mergingFutureResult.addMergeResult(mergeLevel, result);
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -227,13 +230,13 @@ public class Solver {
     }
 
     private interface FutureResult {
-        void addPart(IntermediateResultHolder.IntermediateResult part) throws IOException;
-        IntermediateResultHolder.IntermediateResult get() throws InterruptedException;
+        void addPart(IntermediateResult part) throws IOException;
+        IntermediateResult get() throws InterruptedException;
     }
 
     private class SingleFutureResult implements  FutureResult {
 
-        private final BlockingQueue<IntermediateResultHolder.IntermediateResult> result = new LinkedBlockingQueue<IntermediateResultHolder.IntermediateResult>();
+        private final BlockingQueue<IntermediateResult> result = new LinkedBlockingQueue<IntermediateResult>();
         private final IntermediateResultHolder resultHolder;
 
         public SingleFutureResult(IntermediateResultHolder resultHolder) {
@@ -241,65 +244,77 @@ public class Solver {
         }
 
         @Override
-        public void addPart(IntermediateResultHolder.IntermediateResult part) throws IOException {
+        public void addPart(IntermediateResult part) throws IOException {
             result.add(resultHolder.hold(part.iterate(), part.size()));
         }
 
         @Override
-        public IntermediateResultHolder.IntermediateResult get() throws InterruptedException {
+        public IntermediateResult get() throws InterruptedException {
             return result.take();
         }
     }
 
     private class MergingFutureResult implements FutureResult {
         private int parts;
-        private final LinkedList<IntermediateResultHolder.IntermediateResult> completionQueue;
+        private final SortedMap<Integer, IntermediateResult> completionQueue;
         private final IntermediateResultHolder intermediateResultHolder;
         private final IntermediateResultHolder mergeResultHolder;
 
         public MergingFutureResult(int parts, IntermediateResultHolder intermediateResultHolder, IntermediateResultHolder mergeResultHolder) {
             this.parts = parts;
             this.intermediateResultHolder = intermediateResultHolder;
-            this.completionQueue = new LinkedList<IntermediateResultHolder.IntermediateResult>();
+            this.completionQueue = new TreeMap<Integer, IntermediateResult>();
             this.mergeResultHolder = mergeResultHolder;
         }
 
         @Override
-        public void addPart(IntermediateResultHolder.IntermediateResult part) {
+        public void addPart(IntermediateResult part) {
             synchronized (completionQueue) {
-                completionQueue.add(part);
-                merge();
+                merge(0, part);
             }
         }
 
-        public void addMergeResult(IntermediateResultHolder.IntermediateResult result) {
+        public void addMergeResult(Integer level, IntermediateResult result) {
             synchronized (completionQueue) {
                 parts--;
-                completionQueue.add(result);
-                merge();
+                merge(level, result);
                 completionQueue.notifyAll();
             }
         }
 
-        private void merge() {
-            while (completionQueue.size() > 1) {
-                IntermediateResultHolder.IntermediateResult r1 = completionQueue.poll();
-                IntermediateResultHolder.IntermediateResult r2 = completionQueue.poll();
-                if (parts > 2) {
-                    executor.submit(new Merge(r1, r2, intermediateResultHolder, this));
-                } else if (parts == 2) {
-                    executor.submit(new Merge(r1, r2, mergeResultHolder, this));
+        private void merge(Integer level, IntermediateResult part) {
+            if (completionQueue.isEmpty()) {
+                completionQueue.put(level, part);
+            } else if (parts > 2) {
+                IntermediateResult sameLevelResult = completionQueue.remove(level);
+                if (sameLevelResult != null) {
+                    Tuple pair = new Tuple(sameLevelResult, part);
+                    executor.submit(new Merge(level + 1, pair, intermediateResultHolder, this));
                 } else {
-                    throw new IllegalStateException();
+                    completionQueue.put(level, part);
                 }
+                if (completionQueue.size() == parts){
+                    while (completionQueue.size() > 2) {
+                        int key1 = completionQueue.firstKey();
+                        IntermediateResult r1 = completionQueue.remove(key1);
+                        int key2 = completionQueue.firstKey();
+                        IntermediateResult r2 = completionQueue.remove(key2);
+                        Tuple pair = new Tuple(r1, r2);
+                        executor.submit(new Merge(Math.max(key1, key2) + 1, pair, intermediateResultHolder, this));
+                    }
+                }
+            } else if (parts == 2) {
+                IntermediateResult result = completionQueue.remove(completionQueue.firstKey());
+                Tuple pair = new Tuple(result, part);
+                executor.submit(new Merge(level + 1, pair, mergeResultHolder, this));
             }
         }
 
         @Override
-        public IntermediateResultHolder.IntermediateResult get() throws InterruptedException {
+        public IntermediateResult get() throws InterruptedException {
             synchronized (completionQueue) {
                 while (parts != 1) completionQueue.wait();
-                return completionQueue.poll();
+                return completionQueue.remove(completionQueue.firstKey());
             }
         }
     }
