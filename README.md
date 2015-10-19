@@ -5,6 +5,7 @@ Input file splits on equal chunks, they are sorts separately, and then pairwise 
 Sort/merge steps performs concurrently. Intermediate results can be written in temporary files or stay in memory if available.
 
 Benchmarking results(with 96Mb chunks, on 8core cpu)
+
 |               |     10kB      |      1MB      |     100MB     |      1GB      |      10GB     |
 | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
 |   1 thread    |   0m0.103s    |   0m0.176s    |   0m3.783s    |   0m53.993s   |   15m47.377s  |
